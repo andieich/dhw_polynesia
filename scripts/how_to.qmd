@@ -1,0 +1,692 @@
+---
+title: "Download and plot SST"
+format: html
+editor: visual
+---
+
+### Load packages
+
+```{r}
+library(httr) #for downloads
+library(here) #for project folder structure
+library(tidyverse)
+library(pbapply) #for progress bars
+library(raster) #to load .nc files
+library(lubridate) #fast date change function
+library(sf) # mapping
+library(ggspatial) # mapping
+library(viridis) #plots
+library(patchwork) #plots
+library(ncdf4) # read files
+library(patchwork)
+```
+
+### Load my functions
+
+```{r}
+source(here("scripts/Andi_DHW_functions.R"))
+```
+
+### Climatology
+
+Download global climatology data (MMM). Un-comment this code to download the data:
+
+```{r}
+# url_climatology = "https://www.star.nesdis.noaa.gov/pub/sod/mecb/crw/data/5km/v3.1_op/climatology/nc/ct5km_climatology_v3.1.nc"
+# 
+# httr::GET(url_climatology,
+#             httr::write_disk(here("data/climatology/ct5km_climatology_v3.1.nc"),
+#                              overwrite = T),
+#             httr::add_headers('Accept-Encoding' = 'gzip, deflate'),
+#             httr::progress("down"),
+#             httr::timeout(600))
+```
+
+Read the downloaded data
+
+```{r}
+climatology <- raster::brick(here("data/climatology/ct5km_climatology_v3.1.nc"), varname = "sst_clim_mmm")
+```
+
+### Download data
+
+I already downloaded the data, but just in case you need to do it again:
+
+The `download_all()` function downloads the data in batches of 3 years (as default value, other values are also possible)
+
+The data will be downloaded to the folder you specify
+
+You can either download the SST data for an area, then use the range of `lat1`/`lat2` and `lon1`/`lon2` values. If you just want one location, just enter the same values in `lat1`/`lat2` and `lon1`/`lon2` .
+
+One `.nc` file will be downloaded per 3 years.
+
+### Moorea
+
+Get box around Moorea of 15 km
+
+```{r}
+moorea_lat = -17.536273
+moorea_lon = -149.832730
+
+moorea_box = bounding_box(moorea_lat, moorea_lon, 15, 15)
+
+```
+
+Visualise
+
+```{r}
+map_FrenchPolynesia <- st_read(dsn = here("data/maps/polynesia_map/PYF_adm0.shp")) %>%
+  st_as_sf()
+```
+
+This area will be downloaded\
+
+```{r}
+map_moorea <- ggplot() +
+  geom_sf(data = map_FrenchPolynesia,
+          fill = "antiquewhite",
+          col = "black")+
+  
+  coord_sf(xlim = c(moorea_box$lon_min, moorea_box$lon_max),
+           ylim = c(moorea_box$lat_min, moorea_box$lat_max))+
+  labs(x=NULL, y = NULL, title = "Moorea")+
+  theme_minimal()
+
+map_moorea
+```
+
+```{r}
+# download_all(lat1 = moorea_box$lat_min,
+#              lat2 = moorea_box$lat_max,
+#              lon1 = moorea_box$lon_min,
+#              lon2 = moorea_box$lon_max,
+#              day1 = "1985-04-01",#min date
+#              day2 = "2024-05-22",
+#              folder = here("data/ncdf/moorea_sst"))
+```
+
+Read
+
+```{r}
+dat_moorea_sst <- read_nc(here("data/ncdf/moorea_sst"),
+                      varname = "CRW_SST", 
+                      values_to = "sst")
+```
+
+Similarly, you can download DHW:
+
+```{r}
+# download_all(lat1 = moorea_box$lat_min,
+#              lat2 = moorea_box$lat_max,
+#              lon1 = moorea_box$lon_min,
+#              lon2 = moorea_box$lon_max,
+#              day1 = "1985-04-01",
+#              day2 = "2024-05-22",
+#              parameter = "CRW_DHW",
+#              folder = here("data/ncdf/moorea_dhw"))
+```
+
+Read
+
+```{r}
+dat_moorea_dhw <- read_nc(here("data/ncdf/moorea_dhw"),
+                      varname = "CRW_DHW", 
+                      values_to = "dhw")
+```
+
+Summarise over area and combine data
+
+```{r}
+dat_moorea_sst <- dat_moorea_sst %>% 
+  group_by(date) %>% 
+  summarise(sst = mean(sst, na.rm = T))
+
+dat_moorea_dhw <- dat_moorea_dhw %>% 
+  group_by(date) %>% 
+  summarise(dhw = mean(dhw, na.rm = T))
+
+dat_moorea <- left_join(dat_moorea_sst, dat_moorea_dhw, by = "date")
+
+```
+
+Get MMM
+
+```{r}
+mmm_moorea <- subset_ncdf(climatology,
+                          lat_min = moorea_box$lat_min,
+                          lat_max = moorea_box$lat_max,
+                          lon_min = moorea_box$lon_min,
+                          lon_max = moorea_box$lon_max)
+
+# get mean
+mmm_moorea <- mean(mmm_moorea$mmm, na.rm = T) +1
+  
+```
+
+```{r}
+plot_sst_moorea <- dat_moorea %>% 
+  ggplot(aes(x = date, y = sst))+
+  geom_hline(yintercept = mmm_moorea, linetype = "dashed", col = "#D86D62")+
+  geom_line()+
+  annotate(geom = "text",
+           x = as.Date(-Inf),
+           y = mmm_moorea, 
+           label = paste(round(mmm_moorea,1),"°C"), 
+           col = "#D86D62", vjust = -.3, hjust = -.5)+
+  scale_x_date(date_breaks = "4 years", date_labels =  "%Y") +
+  labs(x = NULL, y = "SST (°C)", title = "A) Moorea")+
+  theme_classic()
+
+
+plot_sst_moorea
+```
+
+DHW
+
+```{r}
+#summarise data
+dat_moorea_dhwS <- dat_moorea %>% 
+  mutate(year = factor(year(date))) %>% 
+  group_by(year) %>% 
+  summarise(max_dhw = max(dhw, na.rm = T)) %>% 
+  filter(max_dhw > 1)  # I think that's what they did
+```
+
+```{r}
+# # as a test, plot DHW in 2016
+# 
+# dat_moorea_maxdhw<- dat_moorea_dhw %>% 
+#                   mutate(year = year(date)) %>% 
+#                   group_by(year, lat, lon) %>% 
+#                   summarise(dhw = max(dhw, na.rm = T))
+# 
+# ggplot() +
+#   geom_raster(data = dat_moorea_maxdhw %>% 
+#                 filter(year == 2024),
+#               aes(y = lat, x = lon, fill = dhw)) +
+#   geom_sf(data = map_FrenchPolynesia,
+#           fill = "antiquewhite",
+#           col = "black")+
+#   coord_sf(xlim = c(moorea_box$lon_min, moorea_box$lon_max),
+#            ylim = c(moorea_box$lat_min, moorea_box$lat_max))+
+#   labs(x=NULL, y = NULL, title = "DHW Moorea 2016")+
+#   scale_fill_viridis()+
+#   theme_minimal()
+
+
+```
+
+```{r}
+#plot
+plot_dhw_moorea <- dat_moorea_dhwS %>% 
+  ggplot(aes(x = year, y = max_dhw))+
+  geom_bar(stat = "identity", fill = "#D86D62")+
+  geom_text(aes(x = year,
+               y = max_dhw,
+               label = round(max_dhw, 1)),
+            vjust = -.3)+
+  labs(x = "Bleaching events", y = "DHW (°C weeks)")+
+ theme_classic()
+
+
+plot_dhw_moorea
+```
+
+```{r}
+plot_moorea <- plot_sst_moorea + plot_dhw_moorea +
+  plot_layout(widths = c(2, 1))
+plot_moorea
+```
+
+### Fakarava
+
+Get box around Fakarava of 15 km
+
+```{r}
+fakarava_lat = -16.3132050
+fakarava_lon = -145.621565
+
+fakarava_box = bounding_box(fakarava_lat, fakarava_lon, 15, 15)
+
+```
+
+Visualise This area will be downloaded\
+
+```{r}
+map_fakarava <- ggplot() +
+  geom_sf(data = map_FrenchPolynesia,
+          fill = "antiquewhite",
+          col = "black")+
+  
+  coord_sf(xlim = c(fakarava_box$lon_min, fakarava_box$lon_max),
+           ylim = c(fakarava_box$lat_min, fakarava_box$lat_max))+
+  labs(x=NULL, y = NULL, title = "Fakarava")+
+  theme_minimal()
+
+map_fakarava
+```
+
+```{r}
+# download_all(lat1 = fakarava_box$lat_min,
+#              lat2 = fakarava_box$lat_max,
+#              lon1 = fakarava_box$lon_min,
+#              lon2 = fakarava_box$lon_max,
+#              day1 = "1985-04-01",#min date
+#              day2 = "2024-05-22",
+#              folder = here("data/ncdf/fakarava_sst"))
+```
+
+Read
+
+```{r}
+dat_fakarava_sst <- read_nc(here("data/ncdf/fakarava_sst"),
+                      varname = "CRW_SST", 
+                      values_to = "sst")
+```
+
+Similarly, you can download DHW:
+
+```{r}
+# download_all(lat1 = fakarava_box$lat_min,
+#              lat2 = fakarava_box$lat_max,
+#              lon1 = fakarava_box$lon_min,
+#              lon2 = fakarava_box$lon_max,
+#              day1 = "1985-04-01",
+#              day2 = "2024-05-22",
+#              parameter = "CRW_DHW",
+#              folder = here("data/ncdf/fakarava_dhw"))
+```
+
+Read
+
+```{r}
+dat_fakarava_dhw <- read_nc(here("data/ncdf/fakarava_dhw"),
+                      varname = "CRW_DHW", 
+                      values_to = "dhw")
+```
+
+Summarise over area and combine data
+
+```{r}
+dat_fakarava_sst <- dat_fakarava_sst %>% 
+  group_by(date) %>% 
+  summarise(sst = mean(sst, na.rm = T))
+
+dat_fakarava_dhw <- dat_fakarava_dhw %>% 
+  group_by(date) %>% 
+  summarise(dhw = mean(dhw, na.rm = T))
+
+dat_fakarava <- left_join(dat_fakarava_sst, dat_fakarava_dhw, by = "date")
+
+```
+
+Get MMM
+
+```{r}
+mmm_fakarava <- subset_ncdf(climatology,
+                          lat_min = fakarava_box$lat_min,
+                          lat_max = fakarava_box$lat_max,
+                          lon_min = fakarava_box$lon_min,
+                          lon_max = fakarava_box$lon_max)
+
+# get mean
+mmm_fakarava <- mean(mmm_fakarava$mmm, na.rm = T) +1
+  
+```
+
+```{r}
+plot_sst_fakarava <- dat_fakarava %>% 
+  ggplot(aes(x = date, y = sst))+
+  geom_hline(yintercept = mmm_fakarava, linetype = "dashed", col = "#D86D62")+
+  geom_line()+
+  annotate(geom = "text",
+           x = as.Date(-Inf),
+           y = mmm_fakarava, 
+           label = paste(round(mmm_fakarava,1),"°C"), 
+           col = "#D86D62", vjust = -.3, hjust = -.5)+
+  scale_x_date(date_breaks = "4 years", date_labels =  "%Y") +
+  labs(x = NULL, y = "SST (°C)", title = "B) Fakarava")+
+  theme_classic()
+
+
+plot_sst_fakarava
+```
+
+DHW
+
+```{r}
+#summarise data
+dat_fakarava_dhwS <- dat_fakarava %>% 
+  mutate(year = factor(year(date))) %>% 
+  group_by(year) %>% 
+  summarise(max_dhw = max(dhw, na.rm = T)) %>% 
+  filter(max_dhw > 1)  # I think that's what they did
+  
+
+#plot
+plot_dhw_fakarava <- dat_fakarava_dhwS %>% 
+  ggplot(aes(x = year, y = max_dhw))+
+  geom_bar(stat = "identity", fill = "#D86D62")+
+  geom_text(aes(x = year,
+               y = max_dhw,
+               label = round(max_dhw, 1)),
+            vjust = -.3)+
+  labs(x = "Bleaching events", y = "DHW (°C weeks)")+
+ theme_classic()
+
+
+plot_dhw_fakarava
+```
+
+```{r}
+plot_fakarava <- plot_sst_fakarava + plot_dhw_fakarava +
+  plot_layout(widths = c(2, 1))
+plot_fakarava
+```
+
+### Tikehau
+
+Get box around Tikehau of 15 km
+
+```{r}
+tikehau_lat = -14.9966195
+tikehau_lon = -148.177199
+
+tikehau_box = bounding_box(tikehau_lat, tikehau_lon, 15, 15)
+
+```
+
+Visualise This area will be downloaded\
+
+```{r}
+map_tikehau <- ggplot() +
+  geom_sf(data = map_FrenchPolynesia,
+          fill = "antiquewhite",
+          col = "black")+
+  
+  coord_sf(xlim = c(tikehau_box$lon_min, tikehau_box$lon_max),
+           ylim = c(tikehau_box$lat_min, tikehau_box$lat_max))+
+  labs(x=NULL, y = NULL, title = "Tikehau")+
+  theme_minimal()
+
+map_tikehau
+```
+
+```{r}
+# download_all(lat1 = tikehau_box$lat_min,
+#              lat2 = tikehau_box$lat_max,
+#              lon1 = tikehau_box$lon_min,
+#              lon2 = tikehau_box$lon_max,
+#              day1 = "1985-04-01",#min date
+#              day2 = "2024-05-22",
+#              folder = here("data/ncdf/tikehau_sst"))
+```
+
+Read
+
+```{r}
+dat_tikehau_sst <- read_nc(here("data/ncdf/tikehau_sst"),
+                      varname = "CRW_SST", 
+                      values_to = "sst")
+```
+
+Similarly, you can download DHW:
+
+```{r}
+# download_all(lat1 = tikehau_box$lat_min,
+#              lat2 = tikehau_box$lat_max,
+#              lon1 = tikehau_box$lon_min,
+#              lon2 = tikehau_box$lon_max,
+#              day1 = "1985-04-01",
+#              day2 = "2024-05-22",
+#              parameter = "CRW_DHW",
+#              folder = here("data/ncdf/tikehau_dhw"))
+```
+
+Read
+
+```{r}
+dat_tikehau_dhw <- read_nc(here("data/ncdf/tikehau_dhw"),
+                      varname = "CRW_DHW", 
+                      values_to = "dhw")
+```
+
+Summarise over area and combine data
+
+```{r}
+dat_tikehau_sst <- dat_tikehau_sst %>% 
+  group_by(date) %>% 
+  summarise(sst = mean(sst, na.rm = T))
+
+dat_tikehau_dhw <- dat_tikehau_dhw %>% 
+  group_by(date) %>% 
+  summarise(dhw = mean(dhw, na.rm = T))
+
+dat_tikehau <- left_join(dat_tikehau_sst, dat_tikehau_dhw, by = "date")
+
+```
+
+Get MMM
+
+```{r}
+mmm_tikehau <- subset_ncdf(climatology,
+                          lat_min = tikehau_box$lat_min,
+                          lat_max = tikehau_box$lat_max,
+                          lon_min = tikehau_box$lon_min,
+                          lon_max = tikehau_box$lon_max)
+
+# get mean
+mmm_tikehau <- mean(mmm_tikehau$mmm, na.rm = T) +1
+  
+```
+
+```{r}
+plot_sst_tikehau <- dat_tikehau %>% 
+  ggplot(aes(x = date, y = sst))+
+  geom_hline(yintercept = mmm_tikehau, linetype = "dashed", col = "#D86D62")+
+  geom_line()+
+  annotate(geom = "text",
+           x = as.Date(-Inf),
+           y = mmm_tikehau, 
+           label = paste(round(mmm_tikehau,1),"°C"), 
+           col = "#D86D62", vjust = -.3, hjust = -.5)+
+  scale_x_date(date_breaks = "4 years", date_labels =  "%Y") +
+  labs(x = NULL, y = "SST (°C)", title = "C) Tikehau")+
+  theme_classic()
+
+
+plot_sst_tikehau
+```
+
+DHW
+
+```{r}
+#summarise data
+dat_tikehau_dhwS <- dat_tikehau %>% 
+  mutate(year = factor(year(date))) %>% 
+  group_by(year) %>% 
+  summarise(max_dhw = max(dhw, na.rm = T)) %>% 
+  filter(max_dhw > 1)  # I think that's what they did
+  
+
+#plot
+plot_dhw_tikehau<- dat_tikehau_dhwS %>% 
+  ggplot(aes(x = year, y = max_dhw))+
+  geom_bar(stat = "identity", fill = "#D86D62")+
+  geom_text(aes(x = year,
+               y = max_dhw,
+               label = round(max_dhw, 1)),
+            vjust = -.3)+
+  labs(x = "Bleaching events", y = "DHW (°C weeks)")+
+ theme_classic()
+
+
+plot_dhw_tikehau
+```
+
+```{r}
+plot_tikehau <- plot_sst_tikehau + plot_dhw_tikehau +
+  plot_layout(widths = c(2, 1))
+
+plot_tikehau
+```
+
+### Bora Bora
+
+Get box around Bora Bora of 15 km
+
+```{r}
+bora_lat = -16.4920754
+bora_lon = -151.740538
+
+bora_box = bounding_box(bora_lat, bora_lon, 15, 15)
+
+```
+
+Visualise This area will be downloaded\
+
+```{r}
+map_bora <- ggplot() +
+  geom_sf(data = map_FrenchPolynesia,
+          fill = "antiquewhite",
+          col = "black")+
+  
+  coord_sf(xlim = c(bora_box$lon_min, bora_box$lon_max),
+           ylim = c(bora_box$lat_min, bora_box$lat_max))+
+  labs(x=NULL, y = NULL, title = "Bora Bora")+
+  theme_minimal()
+
+map_bora
+```
+
+```{r}
+# download_all(lat1 = bora_box$lat_min,
+#              lat2 = bora_box$lat_max,
+#              lon1 = bora_box$lon_min,
+#              lon2 = bora_box$lon_max,
+#              day1 = "1985-04-01",#min date
+#              day2 = "2024-05-22",
+#              folder = here("data/ncdf/bora_sst"))
+```
+
+Read
+
+```{r}
+dat_bora_sst <- read_nc(here("data/ncdf/bora_sst"),
+                      varname = "CRW_SST", 
+                      values_to = "sst")
+```
+
+Similarly, you can download DHW:
+
+```{r}
+# download_all(lat1 = bora_box$lat_min,
+#              lat2 = bora_box$lat_max,
+#              lon1 = bora_box$lon_min,
+#              lon2 = bora_box$lon_max,
+#              day1 = "1985-04-01",
+#              day2 = "2024-05-22",
+#              parameter = "CRW_DHW",
+#              folder = here("data/ncdf/bora_dhw"))
+```
+
+Read
+
+```{r}
+dat_bora_dhw <- read_nc(here("data/ncdf/bora_dhw"),
+                      varname = "CRW_DHW", 
+                      values_to = "dhw")
+```
+
+Summarise over area and combine data
+
+```{r}
+dat_bora_sst <- dat_bora_sst %>% 
+  group_by(date) %>% 
+  summarise(sst = mean(sst, na.rm = T))
+
+dat_bora_dhw <- dat_bora_dhw %>% 
+  group_by(date) %>% 
+  summarise(dhw = mean(dhw, na.rm = T))
+
+dat_bora <- left_join(dat_bora_sst, dat_bora_dhw, by = "date")
+
+```
+
+Get MMM
+
+```{r}
+mmm_bora <- subset_ncdf(climatology,
+                          lat_min = bora_box$lat_min,
+                          lat_max = bora_box$lat_max,
+                          lon_min = bora_box$lon_min,
+                          lon_max = bora_box$lon_max)
+
+# get mean
+mmm_bora <- mean(mmm_bora$mmm, na.rm = T) +1
+  
+```
+
+```{r}
+plot_sst_bora <- dat_bora %>% 
+  ggplot(aes(x = date, y = sst))+
+  geom_hline(yintercept = mmm_bora, linetype = "dashed", col = "#D86D62")+
+  geom_line()+
+  annotate(geom = "text",
+           x = as.Date(-Inf),
+           y = mmm_bora, 
+           label = paste(round(mmm_bora,1),"°C"), 
+           col = "#D86D62", vjust = -.3, hjust = -.5)+
+  scale_x_date(date_breaks = "4 years", date_labels =  "%Y") +
+  labs(x = NULL, y = "SST (°C)", title = "D) Bora Bora")+
+  theme_classic()
+
+
+plot_sst_bora
+```
+
+DHW
+
+```{r}
+#summarise data
+dat_bora_dhwS <- dat_bora %>% 
+  mutate(year = factor(year(date))) %>% 
+  group_by(year) %>% 
+  summarise(max_dhw = max(dhw, na.rm = T)) %>% 
+  filter(max_dhw > 1)  # I think that's what they did
+  
+
+#plot
+plot_dhw_bora<- dat_bora_dhwS %>% 
+  ggplot(aes(x = year, y = max_dhw))+
+  geom_bar(stat = "identity", fill = "#D86D62")+
+  geom_text(aes(x = year,
+               y = max_dhw,
+               label = round(max_dhw, 1)),
+            vjust = -.3)+
+  labs(x = "Bleaching events", y = "DHW (°C weeks)")+
+ theme_classic()
+
+
+plot_dhw_bora
+```
+
+```{r}
+plot_bora <- plot_sst_bora + plot_dhw_bora +
+  plot_layout(widths = c(2, 1))
+plot_bora
+```
+
+### combine plots
+
+```{r}
+plots_all <- plot_moorea/plot_fakarava/plot_tikehau/plot_bora
+plots_all
+```
+
+```{r}
+ggsave(filename = "plot_sst_dhw.pdf", 
+       plot = plots_all, 
+       path = here("plots"),
+       width = 30, height = 40, units = "cm")
+```
